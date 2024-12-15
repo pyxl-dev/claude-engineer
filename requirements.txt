@@ -13,3 +13,4 @@ validators>=0.22.0
 werkzeug>=3.0.1
 prompt-toolkit>=3.0.43
 matplotlib>=3.9.2
+openai>=1.0.0
