@@ -191,6 +191,58 @@ The assistant supports various configuration options through the Config class:
 - ENABLE_THINKING: Toggle thinking indicator
 - DEFAULT_TEMPERATURE: Model temperature setting
 
+## Model Configuration
+
+CE3 supports both Anthropic and OpenRouter as providers, giving you access to a wide range of language models. You can configure your preferred provider and model in the `.env` file:
+
+```env
+# Provider Selection (anthropic or openrouter)
+PROVIDER=openrouter
+
+# API Keys
+ANTHROPIC_API_KEY=your_anthropic_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+
+# Model Configuration
+ANTHROPIC_MODEL=claude-3-opus-20240229
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct
+
+# OpenRouter Configuration (optional)
+OPENROUTER_SITE_URL=your_site_url
+OPENROUTER_APP_NAME=CE3
+```
+
+### Provider Options
+
+1. **Anthropic**
+   - Set `PROVIDER=anthropic` in your `.env`
+   - Requires `ANTHROPIC_API_KEY`
+   - Configure model with `ANTHROPIC_MODEL`
+   - Available models: claude-3-opus, claude-3-sonnet, etc.
+
+2. **OpenRouter**
+   - Set `PROVIDER=openrouter` in your `.env`
+   - Requires `OPENROUTER_API_KEY`
+   - Configure model with `OPENROUTER_MODEL`
+   - Available models:
+     - Meta: llama-3.3-70b-instruct
+     - OpenAI: gpt-4-turbo-preview, gpt-3.5-turbo
+     - Anthropic: claude-3-opus
+     - Google: gemini-pro
+     - And many more via OpenRouter
+
+### Automatic Fallback
+
+When using OpenRouter, if your selected model is unavailable, CE3 will automatically try alternative models in this order:
+1. Your configured model (`OPENROUTER_MODEL`)
+2. GPT-4 Turbo Preview
+3. Claude 3 Opus
+4. GPT-3.5 Turbo
+5. Gemini Pro
+6. Llama 2 70B
+
+This ensures continuous operation even if some models are temporarily unavailable.
+
 ## Requirements
 - Python 3.8+
 - Anthropic API Key (Claude 3.5 access)
@@ -244,12 +296,14 @@ The tools are dynamically loaded and can be extended during runtime through the 
 ## API Keys Required
 1. **Anthropic API Key**: Required for Claude 3.5 access
 2. **E2B API Key**: Required for Python code execution capabilities. Get your key at [e2b.dev](https://e2b.dev/)
+3. **OpenRouter API Key**: Required for OpenRouter access
 
 Add these to your `.env` file:
 
 ```bash
 ANTHROPIC_API_KEY=your_anthropic_key
 E2B_API_KEY=your_e2b_key
+OPENROUTER_API_KEY=your_openrouter_key
 ```
 
 ## Star History
