@@ -13,8 +13,9 @@ class Config:
     PROVIDER = os.getenv('PROVIDER', 'anthropic').lower()  # 'anthropic' or 'openrouter'
     
     # Model Configuration
-    ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-opus-20240229')
-    OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'openai/gpt-4-turbo-preview')
+    ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022')
+    OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'meta-llama/llama-3.3-70b-instruct')
+    MODEL = ANTHROPIC_MODEL if PROVIDER == 'anthropic' else OPENROUTER_MODEL
     
     # OpenRouter Fallback Models (in order of preference)
     OPENROUTER_FALLBACK_MODELS = [
