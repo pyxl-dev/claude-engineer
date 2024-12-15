@@ -13,6 +13,7 @@ import os
 import json
 import sys
 import logging
+from providers import create_client as create_openrouter_client
 
 from config import Config
 from tools.base import BaseTool
@@ -37,11 +38,20 @@ class Assistant:
     """
 
     def __init__(self):
-        if not getattr(Config, 'ANTHROPIC_API_KEY', None):
-            raise ValueError("No ANTHROPIC_API_KEY found in environment variables")
-
-        # Initialize Anthropics client
-        self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+        # Initialize clients based on provider configuration
+        if Config.PROVIDER == 'anthropic':
+            if not Config.ANTHROPIC_API_KEY:
+                raise ValueError("No ANTHROPIC_API_KEY found in environment variables")
+            self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+            self.openrouter_client = None
+        else:  # openrouter provider
+            if not Config.OPENROUTER_API_KEY:
+                raise ValueError("No OPENROUTER_API_KEY found in environment variables")
+            self.openrouter_client = create_openrouter_client(
+                site_url=Config.OPENROUTER_SITE_URL,
+                app_name=Config.OPENROUTER_APP_NAME
+            )
+            self.client = None  # Not using Anthropic client when OpenRouter is the provider
 
         self.conversation_history: List[Dict[str, Any]] = []
         self.console = Console()
@@ -341,21 +351,33 @@ class Assistant:
 
     def _get_completion(self):
         """
-        Get a completion from the Anthropic API.
+        Get a completion from either the Anthropic API or OpenRouter API based on configuration.
         Handles both text-only and multimodal messages.
         """
         try:
-            response = self.client.messages.create(
-                model=Config.MODEL,
-                max_tokens=min(
-                    Config.MAX_TOKENS,
-                    Config.MAX_CONVERSATION_TOKENS - self.total_tokens_used
-                ),
-                temperature=self.temperature,
-                tools=self.tools,
-                messages=self.conversation_history,
-                system=f"{SystemPrompts.DEFAULT}\n\n{SystemPrompts.TOOL_USAGE}"
-            )
+            if Config.PROVIDER == 'anthropic':
+                response = self.client.messages.create(
+                    model=Config.MODEL,
+                    max_tokens=min(
+                        Config.MAX_TOKENS,
+                        Config.MAX_CONVERSATION_TOKENS - self.total_tokens_used
+                    ),
+                    temperature=self.temperature,
+                    tools=self.tools,
+                    messages=self.conversation_history,
+                    system=f"{SystemPrompts.DEFAULT}\n\n{SystemPrompts.TOOL_USAGE}"
+                )
+            else:  # openrouter provider
+                response = self.openrouter_client.get_completion(
+                    prompt=self.conversation_history[-1]['content'],  # Get latest message
+                    model=Config.MODEL
+                )
+                # Create a response object that matches the expected structure
+                response = type('Response', (), {
+                    'content': [type('Content', (), {'text': response})()],
+                    'stop_reason': None,
+                    'usage': type('Usage', (), {'input_tokens': 0, 'output_tokens': 0})()
+                })
 
             # Update token usage based on response usage
             if hasattr(response, 'usage') and response.usage:
@@ -424,6 +446,33 @@ class Assistant:
         except Exception as e:
             logging.error(f"Error in _get_completion: {str(e)}")
             return f"Error: {str(e)}"
+
+    def _display_token_usage(self, usage):
+        """
+        Display a visual representation of token usage and remaining tokens.
+        Uses only the tracked total_tokens_used.
+        """
+        used_percentage = (self.total_tokens_used / Config.MAX_CONVERSATION_TOKENS) * 100
+        remaining_tokens = max(0, Config.MAX_CONVERSATION_TOKENS - self.total_tokens_used)
+
+        self.console.print(f"\nTotal used: {self.total_tokens_used:,} / {Config.MAX_CONVERSATION_TOKENS:,}")
+
+        bar_width = 40
+        filled = int(used_percentage / 100 * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        color = "green"
+        if used_percentage > 75:
+            color = "yellow"
+        if used_percentage > 90:
+            color = "red"
+
+        self.console.print(f"[{color}][{bar}] {used_percentage:.1f}%[/{color}]")
+
+        if remaining_tokens < 20000:
+            self.console.print(f"[bold red]Warning: Only {remaining_tokens:,} tokens remaining![/bold red]")
+
+        self.console.print("---")
 
     def chat(self, user_input):
         """
