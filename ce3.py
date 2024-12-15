@@ -1,6 +1,5 @@
 # ce3.py
 import anthropic
-from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.live import Live
@@ -14,7 +13,6 @@ import os
 import json
 import sys
 import logging
-import asyncio
 
 from config import Config
 from tools.base import BaseTool
@@ -32,35 +30,26 @@ class Assistant:
     """
     The Assistant class manages:
     - Loading of tools from a specified directory.
-    - Interaction with the Anthropic or OpenRouter API (message completion).
+    - Interaction with the Anthropics API (message completion).
     - Handling user commands such as 'refresh' and 'reset'.
     - Token usage tracking and display.
     - Tool execution upon request from model responses.
     """
 
     def __init__(self):
-        self.provider = Config.PROVIDER
-        
-        # Initialize clients based on provider
-        if self.provider == 'anthropic':
-            if not Config.ANTHROPIC_API_KEY:
-                raise ValueError("No ANTHROPIC_API_KEY found in environment variables")
-            self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
-        elif self.provider == 'openrouter':
-            if not Config.OPENROUTER_API_KEY:
-                raise ValueError("No OPENROUTER_API_KEY found in environment variables")
-            self.client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=Config.OPENROUTER_API_KEY,
-            )
-        else:
-            raise ValueError(f"Invalid provider: {self.provider}")
+        if not getattr(Config, 'ANTHROPIC_API_KEY', None):
+            raise ValueError("No ANTHROPIC_API_KEY found in environment variables")
+
+        # Initialize Anthropics client
+        self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
 
         self.conversation_history: List[Dict[str, Any]] = []
         self.console = Console()
+
         self.thinking_enabled = getattr(Config, 'ENABLE_THINKING', False)
         self.temperature = getattr(Config, 'DEFAULT_TEMPERATURE', 0.7)
         self.total_tokens_used = 0
+
         self.tools = self._load_tools()
 
     def _execute_uv_install(self, package_name: str) -> bool:
@@ -198,7 +187,7 @@ class Assistant:
         else:
             formatted_tools = "No tools available."
         self.console.print(formatted_tools)
-        self.console.print("---")
+        self.console.print("\n---")
 
     def _clean_data_for_display(self, data):
         """
@@ -323,120 +312,120 @@ class Assistant:
                     return candidate_tool
         return None
 
-    async def get_completion(self, messages: List[Dict[str, str]], stream: bool = True) -> str:
-        """Get a completion from the selected provider."""
-        try:
-            if self.provider == 'anthropic':
-                return await self._get_anthropic_completion(messages, stream)
-            else:
-                return await self._get_openrouter_completion(messages, stream)
-        except Exception as e:
-            self.console.print(f"[red]Error getting completion: {str(e)}[/red]")
-            return ""
+    def _display_token_usage(self, usage):
+        """
+        Display a visual representation of token usage and remaining tokens.
+        Uses only the tracked total_tokens_used.
+        """
+        used_percentage = (self.total_tokens_used / Config.MAX_CONVERSATION_TOKENS) * 100
+        remaining_tokens = max(0, Config.MAX_CONVERSATION_TOKENS - self.total_tokens_used)
 
-    async def _get_openrouter_completion(self, messages: List[Dict[str, str]], stream: bool = True) -> str:
-        """Get a completion from OpenRouter."""
-        try:
-            extra_headers = {}
-            if Config.OPENROUTER_SITE_URL:
-                extra_headers["HTTP-Referer"] = Config.OPENROUTER_SITE_URL
-            if Config.OPENROUTER_APP_NAME:
-                extra_headers["X-Title"] = Config.OPENROUTER_APP_NAME
+        self.console.print(f"\nTotal used: {self.total_tokens_used:,} / {Config.MAX_CONVERSATION_TOKENS:,}")
 
-            # Format messages for OpenRouter (OpenAI format)
-            formatted_messages = []
-            
-            # Add system prompt first
-            formatted_messages.append({
-                "role": "system",
-                "content": f"{SystemPrompts.DEFAULT}\n\n{SystemPrompts.TOOL_USAGE}"
-            })
-            
-            # Add conversation messages
-            for msg in messages:
-                if isinstance(msg.get("content"), list):
-                    content_text = ""
-                    for content_item in msg["content"]:
-                        if isinstance(content_item, dict):
-                            if content_item.get("type") == "text":
-                                content_text += content_item.get("text", "") + "\n"
-                            elif content_item.get("type") == "tool_result":
-                                content_text += f"Tool Result: {content_item.get('content', '')}\n"
-                    formatted_messages.append({
-                        "role": msg.get("role", "user"),
-                        "content": content_text.strip()
+        bar_width = 40
+        filled = int(used_percentage / 100 * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        color = "green"
+        if used_percentage > 75:
+            color = "yellow"
+        if used_percentage > 90:
+            color = "red"
+
+        self.console.print(f"[{color}][{bar}] {used_percentage:.1f}%[/{color}]")
+
+        if remaining_tokens < 20000:
+            self.console.print(f"[bold red]Warning: Only {remaining_tokens:,} tokens remaining![/bold red]")
+
+        self.console.print("---")
+
+    def _get_completion(self):
+        """
+        Get a completion from the Anthropic API.
+        Handles both text-only and multimodal messages.
+        """
+        try:
+            response = self.client.messages.create(
+                model=Config.MODEL,
+                max_tokens=min(
+                    Config.MAX_TOKENS,
+                    Config.MAX_CONVERSATION_TOKENS - self.total_tokens_used
+                ),
+                temperature=self.temperature,
+                tools=self.tools,
+                messages=self.conversation_history,
+                system=f"{SystemPrompts.DEFAULT}\n\n{SystemPrompts.TOOL_USAGE}"
+            )
+
+            # Update token usage based on response usage
+            if hasattr(response, 'usage') and response.usage:
+                message_tokens = response.usage.input_tokens + response.usage.output_tokens
+                self.total_tokens_used += message_tokens
+                self._display_token_usage(response.usage)
+
+            if self.total_tokens_used >= Config.MAX_CONVERSATION_TOKENS:
+                self.console.print("\n[bold red]Token limit reached! Please reset the conversation.[/bold red]")
+                return "Token limit reached! Please type 'reset' to start a new conversation."
+
+            if response.stop_reason == "tool_use":
+                self.console.print("\n[bold yellow]  Handling Tool Use...[/bold yellow]\n")
+
+                tool_results = []
+                if getattr(response, 'content', None) and isinstance(response.content, list):
+                    # Execute each tool in the response content
+                    for content_block in response.content:
+                        if content_block.type == "tool_use":
+                            result = self._execute_tool(content_block)
+                            
+                            # Handle structured data (like image blocks) vs text
+                            if isinstance(result, (list, dict)):
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": content_block.id,
+                                    "content": result  # Keep structured data intact
+                                })
+                            else:
+                                # Convert text results to proper content blocks
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": content_block.id,
+                                    "content": [{"type": "text", "text": str(result)}]
+                                })
+
+                    # Append tool usage to conversation and continue
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": response.content
                     })
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                    return self._get_completion()  # Recursive call to continue the conversation
+
                 else:
-                    formatted_messages.append({
-                        "role": msg.get("role", "user"),
-                        "content": str(msg.get("content", ""))
-                    })
+                    self.console.print("[red]No tool content received despite 'tool_use' stop reason.[/red]")
+                    return "Error: No tool content received"
 
-            # Start with the configured model
-            models_to_try = [Config.OPENROUTER_MODEL] + Config.OPENROUTER_FALLBACK_MODELS
-            
-            for model in models_to_try:
-                self.console.print(f"[yellow]Trying model: {model}[/yellow]")
-                
-                try:
-                    completion = self.client.chat.completions.create(
-                        extra_headers=extra_headers,
-                        model=model,
-                        messages=formatted_messages,
-                        temperature=self.temperature,
-                        max_tokens=Config.MAX_TOKENS,
-                        top_p=0.9,
-                        presence_penalty=0.6,
-                        frequency_penalty=0.6
-                    )
-                    
-                    self.console.print(f"[green]Response received from {model}[/green]")
-                    
-                    if hasattr(completion, 'choices') and completion.choices and len(completion.choices) > 0:
-                        content = completion.choices[0].message.content
-                        if content:
-                            return content
-                    
-                    # If we get here, the response wasn't valid
-                    self.console.print(f"[yellow]Invalid response from {model}, trying next model...[/yellow]")
-                    
-                except Exception as model_error:
-                    error_message = str(model_error)
-                    if "maintenance" in error_message.lower():
-                        self.console.print(f"[yellow]{model} is under maintenance, trying next model...[/yellow]")
-                    elif "503" in error_message:
-                        self.console.print(f"[yellow]{model} is temporarily unavailable, trying next model...[/yellow]")
-                    else:
-                        self.console.print(f"[red]Error with {model}: {error_message}[/red]")
-                    continue
-            
-            # If we've exhausted all models
-            return "I apologize, but I'm having trouble accessing the language models at the moment. Please try again later."
-            
+            # Final assistant response
+            if (getattr(response, 'content', None) and 
+                isinstance(response.content, list) and 
+                response.content):
+                final_content = response.content[0].text
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": response.content
+                })
+                return final_content
+            else:
+                self.console.print("[red]No content in final response.[/red]")
+                return "No response content available."
+
         except Exception as e:
-            self.console.print(f"[red]Error in OpenRouter completion: {str(e)}[/red]")
+            logging.error(f"Error in _get_completion: {str(e)}")
             return f"Error: {str(e)}"
 
-    async def _get_anthropic_completion(self, messages: List[Dict[str, str]], stream: bool = True) -> str:
-        """Get a completion from Anthropic."""
-        try:
-            response = await self.client.messages.create(
-                model=Config.ANTHROPIC_MODEL,
-                messages=messages,
-                temperature=self.temperature,
-                stream=stream,
-                max_tokens=Config.MAX_TOKENS
-            )
-            
-            if hasattr(response, 'content') and isinstance(response.content, list):
-                return response.content[0].text
-            return ""
-            
-        except Exception as e:
-            self.console.print(f"[red]Error in Anthropic completion: {str(e)}[/red]")
-            return ""
-
-    async def chat(self, user_input):
+    def chat(self, user_input):
         """
         Process a chat message from the user.
         user_input can be either a string (text-only) or a list (multimodal message)
@@ -463,9 +452,9 @@ class Assistant:
             if self.thinking_enabled:
                 with Live(Spinner('dots', text='Thinking...', style="cyan"), 
                          refresh_per_second=10, transient=True):
-                    response = await self.get_completion(self.conversation_history)
+                    response = self._get_completion()
             else:
-                response = await self.get_completion(self.conversation_history)
+                response = self._get_completion()
 
             return response
 
@@ -532,7 +521,7 @@ Available tools:
                 assistant.reset()
                 continue
 
-            response = asyncio.run(assistant.chat(user_input))
+            response = assistant.chat(user_input)
             console.print("\n[bold purple]Claude Engineer:[/bold purple]")
             if isinstance(response, str):
                 safe_response = response.replace('[', '\\[').replace(']', '\\]')
