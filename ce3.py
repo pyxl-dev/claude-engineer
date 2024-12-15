@@ -189,51 +189,27 @@ class Assistant:
         self.console.print(formatted_tools)
         self.console.print("\n---")
 
-    def _display_tool_usage(self, tool_name: str, input_data: Dict, result: str):
-        """
-        If SHOW_TOOL_USAGE is enabled, display the input and result of a tool execution.
-        Handles special cases like image data and large outputs for cleaner display.
-        """
-        if not getattr(Config, 'SHOW_TOOL_USAGE', False):
-            return
-
-        # Clean up input data by removing any large binary/base64 content
-        cleaned_input = self._clean_data_for_display(input_data)
-        
-        # Clean up result data
-        cleaned_result = self._clean_data_for_display(result)
-
-        tool_info = f"""[cyan]📥 Input:[/cyan] {json.dumps(cleaned_input, indent=2)}
-[cyan]📤 Result:[/cyan] {cleaned_result}"""
-        
-        panel = Panel(
-            tool_info,
-            title=f"Tool used: {tool_name}",
-            title_align="left",
-            border_style="cyan",
-            padding=(1, 2)
-        )
-        self.console.print(panel)
-
     def _clean_data_for_display(self, data):
         """
         Helper method to clean data for display by handling various data types
         and removing/replacing large content like base64 strings.
         """
         if isinstance(data, str):
-            try:
-                # Try to parse as JSON first
-                parsed_data = json.loads(data)
-                return self._clean_parsed_data(parsed_data)
-            except json.JSONDecodeError:
-                # If it's a long string, check for base64 patterns
-                if len(data) > 1000 and ';base64,' in data:
-                    return "[base64 data omitted]"
-                return data
-        elif isinstance(data, dict):
-            return self._clean_parsed_data(data)
-        else:
+            # Escape Rich markup characters
+            data = data.replace("[", "\\[").replace("]", "\\]")
+            # Truncate long strings
+            if len(data) > 1000:
+                return data[:1000] + "... [truncated]"
             return data
+        elif isinstance(data, (dict, list)):
+            try:
+                # Try to parse as JSON if it's a string representation
+                if isinstance(data, str):
+                    data = json.loads(data)
+                return self._clean_parsed_data(data)
+            except json.JSONDecodeError:
+                return data
+        return str(data)
 
     def _clean_parsed_data(self, data):
         """
@@ -257,6 +233,40 @@ class Assistant:
         elif isinstance(data, str) and len(data) > 1000 and ';base64,' in data:
             return "[base64 data omitted]"
         return data
+
+    def _display_tool_usage(self, tool_name: str, input_data: Dict, result: str):
+        """
+        If SHOW_TOOL_USAGE is enabled, display the input and result of a tool execution.
+        Handles special cases like image data and large outputs for cleaner display.
+        """
+        if not getattr(Config, 'SHOW_TOOL_USAGE', True):
+            return
+
+        try:
+            # Clean and format the input data
+            cleaned_input = self._clean_data_for_display(input_data)
+            input_str = json.dumps(cleaned_input, indent=2) if isinstance(cleaned_input, (dict, list)) else str(cleaned_input)
+            
+            # Clean and format the result
+            cleaned_result = self._clean_data_for_display(result)
+            result_str = json.dumps(cleaned_result, indent=2) if isinstance(cleaned_result, (dict, list)) else str(cleaned_result)
+
+            # Create a formatted display string with escaped markup
+            display_str = (
+                f"[bold blue]Tool:[/bold blue] {tool_name}\n"
+                f"[bold green]Input:[/bold green]\n{input_str}\n"
+                f"[bold yellow]Result:[/bold yellow]\n{result_str}"
+            )
+
+            # Display the formatted string
+            self.console.print(Panel(display_str))
+
+        except Exception as e:
+            logging.error(f"Error displaying tool usage: {str(e)}")
+            # Fallback to plain print if Rich formatting fails
+            print(f"\nTool: {tool_name}")
+            print(f"Input: {input_data}")
+            print(f"Result: {result}\n")
 
     def _execute_tool(self, tool_use):
         """
